@@ -1,0 +1,7 @@
+{
+  "name": "HandSentry Vision",
+  "description": "A high-performance hand tracking application using MediaPipe and React, featuring real-time skeleton visualization in a sleek Dark Mode interface.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
