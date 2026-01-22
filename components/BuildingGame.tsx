@@ -19,41 +19,93 @@ const BuildingGame = forwardRef<GameHandle, BuildingGameProps>(({ landmarks, onG
   const renderRef = useRef<Matter.Render | null>(null);
   const runnerRef = useRef<Matter.Runner | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const groundRef = useRef<Matter.Body | null>(null);
   
   const [currentBlock, setCurrentBlock] = useState<Matter.Body | null>(null);
   const isPinchingRef = useRef(false);
   const scoreRef = useRef(0);
+  const isGameOverRef = useRef(false);
 
-  // Sound effect when dropping
-  const playDropSound = () => {
+  // Khởi tạo AudioContext an toàn
+  const getAudioCtx = () => {
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({
+        latencyHint: 'interactive'
+      });
+    }
+    if (audioCtxRef.current.state === 'suspended') {
+      audioCtxRef.current.resume();
+    }
+    return audioCtxRef.current;
+  };
+
+  // Âm thanh khi gắp khối (Tiếng "chíp" đi lên)
+  const playGrabSound = () => {
     try {
-      if (!audioCtxRef.current) {
-        audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-      }
-      const ctx = audioCtxRef.current;
-      if (ctx.state === 'suspended') ctx.resume();
-
+      const ctx = getAudioCtx();
       const oscillator = ctx.createOscillator();
       const gainNode = ctx.createGain();
 
       oscillator.type = 'sine';
-      oscillator.frequency.setValueAtTime(150, ctx.currentTime);
-      oscillator.frequency.exponentialRampToValueAtTime(40, ctx.currentTime + 0.2);
+      oscillator.frequency.setValueAtTime(200, ctx.currentTime);
+      oscillator.frequency.exponentialRampToValueAtTime(600, ctx.currentTime + 0.05);
 
-      gainNode.gain.setValueAtTime(0.2, ctx.currentTime);
-      gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
+      gainNode.gain.setValueAtTime(0.1, ctx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.05);
 
       oscillator.connect(gainNode);
       gainNode.connect(ctx.destination);
 
       oscillator.start();
-      oscillator.stop(ctx.currentTime + 0.2);
-    } catch (e) {
-      console.warn("Audio blocked", e);
-    }
+      oscillator.stop(ctx.currentTime + 0.05);
+    } catch (e) {}
   };
 
-  // Helper to create a random shape
+  // Âm thanh khi thả khối (Tiếng "tách" đi xuống - yêu cầu của người dùng)
+  const playDropSound = () => {
+    try {
+      const ctx = getAudioCtx();
+      const oscillator = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(400, ctx.currentTime);
+      oscillator.frequency.exponentialRampToValueAtTime(100, ctx.currentTime + 0.08);
+
+      gainNode.gain.setValueAtTime(0.15, ctx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.08);
+
+      oscillator.connect(gainNode);
+      gainNode.connect(ctx.destination);
+
+      oscillator.start();
+      oscillator.stop(ctx.currentTime + 0.08);
+    } catch (e) {}
+  };
+
+  // Âm thanh khi khối rơi mất (Tiếng "bloop" đi xuống sâu)
+  const playFailSound = () => {
+    try {
+      const ctx = getAudioCtx();
+      const oscillator = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+
+      oscillator.type = 'triangle';
+      oscillator.frequency.setValueAtTime(300, ctx.currentTime);
+      oscillator.frequency.exponentialRampToValueAtTime(50, ctx.currentTime + 0.4);
+
+      gainNode.gain.setValueAtTime(0.15, ctx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+
+      oscillator.connect(gainNode);
+      gainNode.connect(ctx.destination);
+
+      oscillator.start();
+      oscillator.stop(ctx.currentTime + 0.4);
+    } catch (e) {}
+  };
+
+  // Helper tạo khối ngẫu nhiên
   const createRandomBlock = (x: number, y: number) => {
     const shapes = ['plank', 'brick', 'square', 'triangle', 'L-block'];
     const selected = shapes[Math.floor(Math.random() * shapes.length)];
@@ -93,6 +145,7 @@ const BuildingGame = forwardRef<GameHandle, BuildingGameProps>(({ landmarks, onG
         Matter.World.clear(engineRef.current.world, false);
         setupInitialWorld();
         scoreRef.current = 0;
+        isGameOverRef.current = false;
         onGameStateChange({ score: 0, isGameOver: false, isPinching: false });
       }
     }
@@ -104,12 +157,18 @@ const BuildingGame = forwardRef<GameHandle, BuildingGameProps>(({ landmarks, onG
     const width = window.innerWidth;
     const height = window.innerHeight;
 
-    // Base platform
-    const ground = Matter.Bodies.rectangle(width / 2, height - 40, 400, 60, {
+    // Nền tảng trung tâm (Base platform)
+    const ground = Matter.Bodies.rectangle(width / 2, height / 2 + 100, 400, 60, {
       isStatic: true,
-      render: { fillStyle: 'rgba(30, 41, 59, 0.8)', strokeStyle: '#475569', lineWidth: 4 }
+      render: { 
+        fillStyle: 'rgba(30, 41, 59, 0.9)', 
+        strokeStyle: '#0ea5e9', 
+        lineWidth: 4 
+      },
+      label: 'ground'
     });
 
+    groundRef.current = ground;
     Matter.World.add(world, [ground]);
   };
 
@@ -117,7 +176,7 @@ const BuildingGame = forwardRef<GameHandle, BuildingGameProps>(({ landmarks, onG
     if (!canvasRef.current) return;
 
     const engine = Matter.Engine.create({
-      gravity: { y: 1.5 } // Slightly stronger gravity for more physical feel
+      gravity: { y: 1.5 }
     });
     const runner = Matter.Runner.create();
     
@@ -141,33 +200,53 @@ const BuildingGame = forwardRef<GameHandle, BuildingGameProps>(({ landmarks, onG
     Matter.Render.run(render);
 
     const checkInterval = setInterval(() => {
+      if (isGameOverRef.current || !groundRef.current) return;
+
       const bodies = Matter.Composite.allBodies(engine.world);
       let maxHeight = 0;
       let gameOver = false;
+      const groundY = groundRef.current.position.y;
 
       bodies.forEach(body => {
-        if (!body.isStatic) {
-          // Check if any part of the body fell too low
-          if (body.position.y > window.innerHeight + 100) gameOver = true;
+        if (!body.isStatic && (body.parts.length <= 1 || (body.parts.length > 1 && body.parent === body))) {
+          // Check nếu rơi khỏi tầm mắt (so với vị trí thanh nền)
+          if (body.position.y > groundY + 400 || body.position.y > window.innerHeight + 100) {
+            gameOver = true;
+          }
           
-          // Calculate tower height from the ground (height - 40 is ground Y)
-          const h = Math.max(0, (window.innerHeight - 70) - body.position.y);
+          // Tính điểm độ cao so với mặt trên của thanh nền (groundY - 30)
+          const h = Math.max(0, (groundY - 30) - body.position.y);
           if (h > maxHeight) maxHeight = Math.round(h / 15);
         }
       });
 
-      if (maxHeight !== scoreRef.current || gameOver) {
+      if (gameOver && !isGameOverRef.current) {
+        isGameOverRef.current = true;
+        playFailSound();
+        onGameStateChange({ score: scoreRef.current, isGameOver: true, isPinching: isPinchingRef.current });
+      } else if (maxHeight !== scoreRef.current) {
         scoreRef.current = maxHeight;
-        onGameStateChange({ score: scoreRef.current, isGameOver: gameOver, isPinching: isPinchingRef.current });
+        onGameStateChange({ score: scoreRef.current, isGameOver: false, isPinching: isPinchingRef.current });
       }
     }, 300);
 
     const handleResize = () => {
        if (renderRef.current && canvasRef.current) {
-         canvasRef.current.width = window.innerWidth;
-         canvasRef.current.height = window.innerHeight;
-         renderRef.current.options.width = window.innerWidth;
-         renderRef.current.options.height = window.innerHeight;
+         const width = window.innerWidth;
+         const height = window.innerHeight;
+         
+         canvasRef.current.width = width;
+         canvasRef.current.height = height;
+         renderRef.current.options.width = width;
+         renderRef.current.options.height = height;
+
+         // Cập nhật vị trí thanh nền khi resize
+         if (groundRef.current) {
+           Matter.Body.setPosition(groundRef.current, {
+             x: width / 2,
+             y: height / 2 + 100
+           });
+         }
        }
     };
     window.addEventListener('resize', handleResize);
@@ -183,6 +262,9 @@ const BuildingGame = forwardRef<GameHandle, BuildingGameProps>(({ landmarks, onG
   }, []);
 
   useEffect(() => {
+    if (isGameOverRef.current) return;
+    
+    // Nếu không thấy tay, coi như nhả grip
     if (!landmarks || landmarks.length === 0 || !engineRef.current) {
       if (currentBlock) {
         Matter.Body.setStatic(currentBlock, false);
@@ -204,27 +286,28 @@ const BuildingGame = forwardRef<GameHandle, BuildingGameProps>(({ landmarks, onG
     let midX = thumbTip.x * window.innerWidth;
     const midY = thumbTip.y * window.innerHeight;
 
-    // Note: Landmarks are already mirrored by HandTracker component's mirroring logic if applied to coordinates
-    // However, HandTracker currently passes raw landmarks from MediaPipe and mirrors the CANVAS.
-    // If mirror is true, we need to flip the landmark coordinate to match the visual.
     if (mirror) midX = window.innerWidth - midX;
 
-    const isPinching = dist < 0.08; // Slightly larger tolerance for full screen
+    const isPinching = dist < 0.08;
 
     if (isPinching) {
       if (!currentBlock) {
+        // Mới gắp khối
         const newBlock = createRandomBlock(midX, midY);
         Matter.Body.setStatic(newBlock, true);
         Matter.World.add(engineRef.current.world, newBlock);
         setCurrentBlock(newBlock);
+        playGrabSound(); // Phản hồi khi gắp
       } else {
+        // Đang di chuyển khối
         Matter.Body.setPosition(currentBlock, { x: midX, y: midY });
       }
     } else {
       if (currentBlock) {
+        // Nhả grip - THẢ KHỐI
         Matter.Body.setStatic(currentBlock, false);
         setCurrentBlock(null);
-        playDropSound();
+        playDropSound(); // Phản hồi khi nhả (yêu cầu người dùng)
       }
     }
 
